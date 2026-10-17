@@ -8,6 +8,10 @@
 Per-monitor wallpaper editor and display settings panel for
 [Omarchy](https://github.com/basecamp/omarchy) on Hyprland/Quickshell.
 
+| Wallpaper tab | Monitors tab |
+|---|---|
+| ![Obrii wallpaper tab](docs/wallpaper-tab.webp) | ![Obrii monitors tab](docs/monitors-tab.webp) |
+
 Two Quickshell plugins plus a small CLI backend:
 
 | Path | Purpose |
