@@ -59,6 +59,14 @@ Then enable both plugins in `~/.config/omarchy/shell.json`:
 Restart the shell and open the editor from the Omarchy menu (or with
 `omarchy-shell shell summon elinchi.wallpaper-editor '{}'`).
 
+### Menu entry (optional)
+
+To show **Obrii** in the Omarchy menu, merge
+[`extensions/omarchy-menu.jsonc.example`](extensions/omarchy-menu.jsonc.example)
+into `~/.config/omarchy/extensions/omarchy-menu.jsonc`. The label is not taken
+from the plugin manifest, so without this entry the menu keeps whatever label
+you already had.
+
 ## Usage
 
 - **Wallpaper tab**
@@ -209,6 +217,13 @@ cd Obrii
 
 Перезапусти shell і відкрий редактор з меню Omarchy (або командою
 `omarchy-shell shell summon elinchi.wallpaper-editor '{}'`).
+
+### Пункт меню (опційно)
+
+Щоб у меню Omarchy було видно **Obrii**, додай вміст
+[`extensions/omarchy-menu.jsonc.example`](extensions/omarchy-menu.jsonc.example)
+у `~/.config/omarchy/extensions/omarchy-menu.jsonc`. Назва в меню не береться з
+манифеста плагіна, тому без цього запису лишиться те, що було налаштовано раніше.
 
 ## Використання
 

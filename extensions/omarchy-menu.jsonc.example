@@ -1,0 +1,12 @@
+{
+  // Additive-only custom menu items.
+  // Merge this object into ~/.config/omarchy/extensions/omarchy-menu.jsonc.
+  // Do NOT redefine ids that already exist in the stock menu.
+
+  "style.wallpaper-editor": {
+    "icon": "",
+    "label": "Obrii",
+    "aliases": ["obrii", "wallpaper-editor", "шпалери", "редактор шпалер"],
+    "action": "omarchy-shell shell summon elinchi.wallpaper-editor '{}'"
+  }
+}
