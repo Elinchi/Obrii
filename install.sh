@@ -20,6 +20,10 @@ install -m 755 "$ROOT/bin/omarchy-monitor-control" "$BIN_DIR/omarchy-monitor-con
 # lost on the next theme change. Safe to run repeatedly.
 "$BIN_DIR/omarchy-per-monitor-bg" migrate || true
 
+# Add "Obrii" to the Omarchy menu under Style. Skips the edit when the entry
+# already exists, so a custom label is never overwritten.
+python3 "$ROOT/scripts/merge-menu.py" || true
+
 cat <<'MSG'
 
 Obrii installed.
@@ -30,7 +34,7 @@ Next steps:
        { "id": "elinchi.wallpaper-editor" }
      and keep "omarchy.background" in "disabledPlugins".
   2. Restart the shell:  omarchy-restart-shell
-  3. Open the editor from the Omarchy menu, or:
+  3. Open Obrii from the Omarchy menu (Style → Obrii), or:
        omarchy-shell shell summon elinchi.wallpaper-editor '{}'
 
 Run the tests with:
