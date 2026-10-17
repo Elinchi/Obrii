@@ -623,6 +623,14 @@ Item {
                 Layout.fillWidth: true
                 spacing: Style.space(3)
                 Text {
+                  text: "OBRII"
+                  color: Color.accent
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.caption
+                  font.bold: true
+                  font.letterSpacing: 1.6
+                }
+                Text {
                   text: root.activeTab === "wallpaper" ? root.tr("title.wallpaper") : root.tr("title.monitors")
                   color: Color.foreground
                   font.family: Style.font.family

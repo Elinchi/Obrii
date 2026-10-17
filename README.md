@@ -1,4 +1,6 @@
-# Omarchy Wallpaper & Display
+# Obrii
+
+**Wallpaper & Display for Omarchy.**
 
 Per-monitor wallpaper editor and display settings panel for
 [Omarchy](https://github.com/basecamp/omarchy) on Hyprland/Quickshell.
@@ -34,8 +36,8 @@ Two Quickshell plugins plus a small CLI backend:
 ## Install
 
 ```bash
-git clone https://github.com/kochenkobohdan-lab/Omarchy-Wallpaper-Display.git
-cd Omarchy-Wallpaper-Display
+git clone https://github.com/kochenkobohdan-lab/Obrii.git
+cd Obrii
 ./install.sh
 ```
 

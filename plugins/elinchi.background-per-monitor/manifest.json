@@ -1,10 +1,10 @@
 {
   "schemaVersion": 1,
   "id": "elinchi.background-per-monitor",
-  "name": "Per-monitor Wallpapers",
+  "name": "Obrii Background",
   "version": "1.1.0",
   "author": "Elinchi",
-  "description": "Per-monitor wallpaper renderer with per-theme settings, positioning and scaling",
+  "description": "Obrii background renderer: per-monitor wallpapers with per-theme settings",
   "kinds": ["service"],
   "entryPoints": {
     "service": "BackgroundPerMonitor.qml"

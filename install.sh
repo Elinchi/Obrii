@@ -22,7 +22,7 @@ install -m 755 "$ROOT/bin/omarchy-monitor-control" "$BIN_DIR/omarchy-monitor-con
 
 cat <<'MSG'
 
-Installed.
+Obrii installed.
 
 Next steps:
   1. Add both ids to ~/.config/omarchy/shell.json "plugins" if they are missing:
