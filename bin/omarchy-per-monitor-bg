@@ -41,6 +41,8 @@ MSG_EN[unknown_property]="Unknown property: %s"
 MSG_UK[unknown_property]="Невідомий параметр: %s"
 MSG_EN[usage_set]="Usage: %s set <monitor> <file> [mode] [position] [x] [y]"
 MSG_UK[usage_set]="Використання: %s set <монітор> <файл> [режим] [позиція] [x] [y]"
+MSG_EN[not_image]="Not an image file: %s"
+MSG_UK[not_image]="Це не файл зображення: %s"
 
 msg() {
   local key="$1"; shift
@@ -379,6 +381,76 @@ set_offsets() {
   persist
 }
 
+# Open Omarchy's image picker for the given directories and print the chosen
+# file. Prints nothing when the picker is cancelled.
+has_images() {
+  find "$1" -maxdepth 1 -type f \
+    \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' -o -iname '*.gif' \
+       -o -iname '*.bmp' -o -iname '*.webp' \) -print -quit 2>/dev/null | grep -q .
+}
+
+pick_image_file() {
+  local dirs="$1"
+  local tmp_dir selection done_file
+  tmp_dir="$(mktemp -d)"
+  selection="$tmp_dir/selection"
+  done_file="$tmp_dir/done"
+  trap 'rm -rf -- "$tmp_dir"' RETURN
+
+  omarchy-shell image-selector open "$dirs" 1 "" "$selection" "$done_file" true true >/dev/null
+  for _ in $(seq 1 600); do [[ -f "$done_file" ]] && break; sleep 0.1; done
+  if [[ ! -f "$done_file" ]]; then
+    msg picker_timeout
+    return 1
+  fi
+  if [[ -s "$selection" ]]; then
+    cat -- "$selection"
+  fi
+  trap - RETURN
+  rm -rf -- "$tmp_dir"
+}
+
+# Copy an image into the active theme's background folder. Omarchy reads
+# ~/.config/omarchy/backgrounds/<theme>/ when it rotates or lists a theme's
+# backgrounds, so this is the persistent place for "the theme's images" (the
+# staged current/theme/backgrounds is replaced on every theme switch).
+add_theme_image() {
+  local source="${1:-}"
+  ensure_config
+  local theme
+  theme="$(current_theme)"
+  [[ -n "$theme" ]] || { msg theme_unknown; return 1; }
+  safe_theme "$theme" >/dev/null || return 1
+
+  local dir="$CONFIG_HOME/backgrounds/$theme"
+  mkdir -p "$dir"
+
+  if [[ -z "$source" ]]; then
+    local start="$HOME/Pictures"
+    if [[ ! -d "$start" ]] || ! has_images "$start"; then start="$HOME"; fi
+    source="$(pick_image_file "$start")" || return 1
+    [[ -n "$source" ]] || return 0
+  fi
+
+  [[ -f "$source" ]] || { msg wallpaper_not_found "$source"; return 1; }
+  case "${source,,}" in
+    *.jpg|*.jpeg|*.png|*.gif|*.bmp|*.webp) ;;
+    *) msg not_image "$source"; return 1 ;;
+  esac
+
+  local base dest n=1
+  base="$(basename -- "$source")"
+  dest="$dir/$base"
+  while [[ -e "$dest" ]]; do
+    n=$((n + 1))
+    dest="$dir/${base%.*}-$n.${base##*.}"
+  done
+  cp -- "$source" "$dest"
+  dest="$(realpath -- "$dest")"
+  log theme-image "theme=$theme" "source=$source" "dest=$dest"
+  printf '%s\n' "$dest"
+}
+
 select_wallpaper() {
   local monitor="$1" dirs="${2:-}"
   local theme_name user_dirs
@@ -394,7 +466,7 @@ select_wallpaper() {
   done_file="$tmp_dir/done"
   trap 'rm -rf -- "$tmp_dir"' RETURN
 
-  omarchy-shell image-selector open "$dirs" 1 "" "$selection" "$done_file" true true
+  omarchy-shell image-selector open "$dirs" 1 "" "$selection" "$done_file" true true >/dev/null
   for _ in $(seq 1 600); do [[ -f "$done_file" ]] && break; sleep 0.1; done
   if [[ ! -f "$done_file" ]]; then
     msg picker_timeout
@@ -450,6 +522,7 @@ case "${1:-}" in
     done ;;
   select) [[ $# -ge 2 ]] || exit 2; select_wallpaper "$2" "${3:-}" ;;
   select-global) select_wallpaper "--global" "${2:-}" ;;
+  add-theme-image) add_theme_image "${2:-}" ;;
   apply) refresh_shell ;;
   show-config) jq . "$CONFIG_FILE" ;;
   *)
@@ -468,6 +541,7 @@ case "${1:-}" in
   sync-theme <файл>        оновити шпалери моніторів разом із темою
   snapshot <тема>          зберегти поточний стан як файл теми
   restore <тема>           завантажити файл теми в активний стан
+  add-theme-image [файл]   додати зображення до фонів поточної теми
   migrate                  перенести старий конфіг у пер-темне сховище
   theme                    надрукувати активну тему
   log <рівень> <текст>     записати подію з UI в журнал
@@ -488,6 +562,7 @@ Per-monitor wallpaper control:
   sync-theme <file>        refresh per-monitor wallpapers with the theme
   snapshot <theme>         save the current state as a theme file
   restore <theme>          load a theme file into the active state
+  add-theme-image [file]   add an image to the current theme's backgrounds
   migrate                  move the old config into per-theme storage
   theme                    print the active theme
   log <level> <message>    write a UI event to the log
