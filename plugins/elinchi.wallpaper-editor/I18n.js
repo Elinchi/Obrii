@@ -78,6 +78,7 @@ var dictionaries = {
     "button.wait": "Please wait…",
     "button.chooseImage": "Choose image…",
     "button.changeTheme": "Change theme…",
+    "button.addThemeImage": "Add image to theme…",
     "button.resetMonitor": "Reset for monitor",
     "button.done": "Done",
     "button.refreshList": "Refresh list",
@@ -86,6 +87,11 @@ var dictionaries = {
     "status.displayBusy": "Applying and saving…",
     "status.displayDirty": "Unsaved changes",
     "status.displayClean": "New displays are added automatically",
+
+    "theme.caption": "THEME",
+    "theme.currentHint": "Your current theme",
+    "status.themeImageAdded": "Added to the theme: {name}",
+    "error.addThemeImage": "Could not add the image to the theme: {detail}",
 
     "error.unsavedMonitor": "Apply or discard this monitor's pending changes first.",
     "error.configRead": "Could not read the wallpaper configuration: {detail}",
@@ -172,6 +178,7 @@ var dictionaries = {
     "button.wait": "Зачекай…",
     "button.chooseImage": "Вибрати зображення…",
     "button.changeTheme": "Змінити тему…",
+    "button.addThemeImage": "Додати зображення до теми…",
     "button.resetMonitor": "Скинути для монітора",
     "button.done": "Готово",
     "button.refreshList": "Оновити список",
@@ -180,6 +187,11 @@ var dictionaries = {
     "status.displayBusy": "Застосовую й зберігаю…",
     "status.displayDirty": "Є незбережені зміни",
     "status.displayClean": "Нові дисплеї додаються автоматично",
+
+    "theme.caption": "ТЕМА",
+    "theme.currentHint": "Ваша поточна тема",
+    "status.themeImageAdded": "Додано до теми: {name}",
+    "error.addThemeImage": "Не вдалося додати зображення до теми: {detail}",
 
     "error.unsavedMonitor": "Спочатку застосуй або скасуй незбережені параметри цього монітора.",
     "error.configRead": "Не вдалося прочитати налаштування шпалер: {detail}",

@@ -25,6 +25,8 @@ Item {
   property bool dragging: false
   property string errorText: ""
   property string configError: ""
+  property string statusMessage: ""
+  property string currentTheme: ""
   property var pendingOffsets: null
   property string selectedMonitor: ""
   property string globalWallpaper: ""
@@ -68,6 +70,7 @@ Item {
     activeTab = payload.tab === "monitors" ? "monitors" : "wallpaper"
     opened = true
     errorText = ""
+    statusMessage = ""
     loadMonitorsProc.running = true
     readConfigProc.running = true
     readGlobalProc.running = true
@@ -330,6 +333,7 @@ Item {
   function runCommand(args) {
     if (commandProc.running) return
     errorText = ""
+    statusMessage = ""
     busy = true
     commandProc.command = args
     commandProc.running = true
@@ -431,6 +435,16 @@ Item {
   readonly property var monitorOptions: monitors.map(function(m) {
     return { value: m.name, label: m.name + (m.name === "DP-3" ? " · " + root.tr("monitor.primary") : "") }
   })
+
+  FileView {
+    id: themeNameView
+    path: Quickshell.env("HOME") + "/.local/state/omarchy/current/theme.name"
+    watchChanges: true
+    printErrors: false
+    onLoaded: root.currentTheme = String(text() || "").trim()
+    onFileChanged: reload()
+    onLoadFailed: root.currentTheme = ""
+  }
 
   Process {
     id: loadMonitorsProc
@@ -573,6 +587,38 @@ Item {
     }
   }
 
+  Process {
+    id: themeImageProc
+    command: ["omarchy-per-monitor-bg", "add-theme-image"]
+    property string addedPath: ""
+    property string failureText: ""
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: themeImageProc.addedPath = String(text || "").trim()
+    }
+    stderr: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: themeImageProc.failureText = root.backendMessage(String(text || ""))
+    }
+    onExited: function(code) {
+      root.busy = false
+      if (code === 0) {
+        if (themeImageProc.addedPath) {
+          var name = themeImageProc.addedPath.split("/").pop()
+          root.statusMessage = root.trf("status.themeImageAdded", { name: name })
+          root.debugLog("info", "theme image added: " + themeImageProc.addedPath)
+        }
+      } else {
+        root.errorText = root.trf("error.addThemeImage", {
+          detail: themeImageProc.failureText || ("exit " + code)
+        })
+        root.debugLog("error", root.errorText)
+      }
+      themeImageProc.addedPath = ""
+      themeImageProc.failureText = ""
+    }
+  }
+
   PanelWindow {
     visible: root.opened
     anchors { top: true; bottom: true; left: true; right: true }
@@ -645,6 +691,42 @@ Item {
                   font.family: Style.font.family
                   font.pixelSize: Style.font.bodySmall
                   wrapMode: Text.Wrap
+                }
+              }
+              Item { Layout.fillWidth: true }
+              ColumnLayout {
+                visible: !!root.currentTheme
+                Layout.alignment: Qt.AlignTop
+                spacing: Style.space(3)
+                Text {
+                  Layout.fillWidth: true
+                  text: root.tr("theme.caption")
+                  color: Color.accent
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.caption
+                  font.bold: true
+                  font.letterSpacing: 1.6
+                  horizontalAlignment: Text.AlignRight
+                }
+                Text {
+                  Layout.fillWidth: true
+                  Layout.alignment: Qt.AlignRight
+                  text: root.currentTheme
+                  color: Color.foreground
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.title
+                  font.bold: true
+                  horizontalAlignment: Text.AlignRight
+                  Layout.maximumWidth: Style.space(260)
+                  elide: Text.ElideRight
+                }
+                Text {
+                  Layout.fillWidth: true
+                  text: root.tr("theme.currentHint")
+                  color: Color.muted
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.bodySmall
+                  horizontalAlignment: Text.AlignRight
                 }
               }
               Button { text: "×"; onClicked: root.dismiss(); implicitWidth: Style.space(38); implicitHeight: Style.space(38) }
@@ -915,11 +997,12 @@ Item {
 
                 Text {
                   Layout.fillWidth: true
-                  text: root.errorText || root.configError || (root.busy ? root.tr("status.busy")
+                  text: root.errorText || root.configError || root.statusMessage || (root.busy ? root.tr("status.busy")
                     : (root.selectedConfig.wallpaper ? root.tr("status.ownWallpaper")
                       : (root.hasMonitorOverride ? root.tr("status.globalMoved")
                         : root.tr("status.global"))))
-                  color: (root.errorText || root.configError) ? Color.urgent : Color.muted
+                  color: (root.errorText || root.configError) ? Color.urgent
+                    : (root.statusMessage ? Color.accent : Color.muted)
                   font.family: Style.font.family
                   font.pixelSize: Style.font.caption
                   wrapMode: Text.Wrap
@@ -1213,6 +1296,16 @@ Item {
                 text: root.tr("button.changeTheme")
                 enabled: !root.busy
                 onClicked: root.changeTheme()
+              }
+              Button {
+                text: root.tr("button.addThemeImage")
+                enabled: !root.busy
+                onClicked: {
+                  root.statusMessage = ""
+                  root.errorText = ""
+                  root.busy = true
+                  themeImageProc.running = true
+                }
               }
               Button {
                 text: root.tr("button.resetMonitor")
