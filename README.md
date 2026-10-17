@@ -1,6 +1,7 @@
 # Obrii
 
-**Wallpaper & Display for Omarchy.**
+**A simple Omarchy app to configure wallpapers and monitors properly.**
+**Проста програма для Omarchy, щоб нормально налаштувати шпалери та монітори.**
 
 Per-monitor wallpaper editor and display settings panel for
 [Omarchy](https://github.com/basecamp/omarchy) on Hyprland/Quickshell.
@@ -36,7 +37,7 @@ Two Quickshell plugins plus a small CLI backend:
 ## Install
 
 ```bash
-git clone https://github.com/kochenkobohdan-lab/Obrii.git
+git clone https://github.com/Elinchi/Obrii.git
 cd Obrii
 ./install.sh
 ```
