@@ -1,0 +1,498 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# UI language: explicit override, then session locale, English fallback.
+detect_language() {
+  local tag="${WALLPAPER_EDITOR_LANG:-${LC_ALL:-${LANG:-}}}"
+  tag="${tag,,}"
+  case "$tag" in
+    uk|uk_*|uk-*|ua|ua_*|ua-*) printf 'uk' ;;
+    *) printf 'en' ;;
+  esac
+}
+LANG_CODE="$(detect_language)"
+declare -A MSG_EN MSG_UK
+
+MSG_EN[invalid_json]="Invalid JSON in %s"
+MSG_UK[invalid_json]="Некоректний JSON у %s"
+MSG_EN[monitor_not_found]="Monitor not found: %s"
+MSG_UK[monitor_not_found]="Монітор не знайдено: %s"
+MSG_EN[wallpaper_not_found]="Wallpaper file not found: %s"
+MSG_UK[wallpaper_not_found]="Файл шпалер не знайдено: %s"
+MSG_EN[theme_bg_not_found]="Theme wallpaper file not found: %s"
+MSG_UK[theme_bg_not_found]="Файл шпалер теми не знайдено: %s"
+MSG_EN[unknown_mode]="Unknown mode: %s"
+MSG_UK[unknown_mode]="Невідомий режим: %s"
+MSG_EN[unknown_position]="Unknown position: %s"
+MSG_UK[unknown_position]="Невідома позиція: %s"
+MSG_EN[offsets_integer]="Offsets must be integers."
+MSG_UK[offsets_integer]="Зміщення мають бути цілими числами."
+MSG_EN[offset_integer]="Offset must be an integer."
+MSG_UK[offset_integer]="Зміщення має бути цілим числом."
+MSG_EN[bad_theme]="Invalid theme name: %s"
+MSG_UK[bad_theme]="Некоректна назва теми: %s"
+MSG_EN[theme_unknown]="Could not determine the active theme."
+MSG_UK[theme_unknown]="Не вдалося визначити активну тему."
+MSG_EN[no_overrides]="No per-monitor settings for %s."
+MSG_UK[no_overrides]="Для монітора %s немає окремих налаштувань."
+MSG_EN[picker_timeout]="Wallpaper selection did not finish within 60 seconds."
+MSG_UK[picker_timeout]="Вибір шпалер не завершився за 60 секунд."
+MSG_EN[unknown_property]="Unknown property: %s"
+MSG_UK[unknown_property]="Невідомий параметр: %s"
+MSG_EN[usage_set]="Usage: %s set <monitor> <file> [mode] [position] [x] [y]"
+MSG_UK[usage_set]="Використання: %s set <монітор> <файл> [режим] [позиція] [x] [y]"
+
+msg() {
+  local key="$1"; shift
+  local format
+  if [[ $LANG_CODE == uk ]]; then format="${MSG_UK[$key]-$key}"; else format="${MSG_EN[$key]-$key}"; fi
+  # shellcheck disable=SC2059
+  printf "$format\n" "$@" >&2
+}
+
+# Per-monitor wallpaper control for Omarchy.
+#
+# The global wallpaper is NOT stored here: it is the Omarchy theme background
+# symlink managed by `omarchy-theme-bg-set` and rotated on every theme change.
+# This tool only stores per-monitor overrides and keeps them in sync with the
+# active theme.
+#
+# Per-theme storage
+# -----------------
+# Every theme owns its own file at
+#   ~/.config/omarchy/backgrounds-per-monitor/<theme>.json
+# The renderer keeps reading the single active file
+#   ~/.config/omarchy/backgrounds-per-monitor.json
+# which is a plain copy (never a symlink) of the current theme's file. On a
+# theme change `sync-theme` snapshots the outgoing theme, then restores the
+# incoming one from its file (or resets to the theme default when none exists).
+# This is why wallpapers, mode, position and offsets survive a round-trip
+# through another theme.
+
+CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy"
+STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy"
+CONFIG_FILE="$CONFIG_HOME/backgrounds-per-monitor.json"
+THEMES_DIR="$CONFIG_HOME/backgrounds-per-monitor"
+LOG_FILE="$STATE_HOME/wallpaper-editor.log"
+CURRENT_BACKGROUND_LINK="$STATE_HOME/current/background"
+CURRENT_THEME_BACKGROUNDS="$STATE_HOME/current/theme/backgrounds"
+CURRENT_THEME_NAME_FILE="$STATE_HOME/current/theme.name"
+USER_THEME_BACKGROUNDS="$CONFIG_HOME/backgrounds"
+
+# Append a structured line to the shared log. Format mirrors
+# omarchy-hyprland-monitor-scaling's monitor-scaling.log: key=value pairs
+# separated by tabs, first key is the ISO timestamp. Set
+# WALLPAPER_EDITOR_DEBUG=1 to also echo the line to stderr.
+log() {
+  local event="$1"; shift
+  local tab=$'\t'
+  local line="at=$(date --iso-8601=seconds)${tab}event=${event}"
+  local kv
+  for kv in "$@"; do line="${line}${tab}${kv}"; done
+  mkdir -p "$STATE_HOME" 2>/dev/null || true
+  printf '%s\n' "$line" >>"$LOG_FILE" 2>/dev/null || true
+  if [[ ${WALLPAPER_EDITOR_DEBUG:-} == "1" ]]; then
+    printf '[wallpaper-editor] %s\n' "$line" >&2
+  fi
+}
+
+ensure_config() {
+  mkdir -p "$CONFIG_HOME" "$THEMES_DIR"
+  [[ -f "$CONFIG_FILE" ]] || printf '{\n  "theme": "%s",\n  "monitors": {}\n}\n' "$(current_theme)" > "$CONFIG_FILE"
+  jq -e 'type == "object" and (.monitors // {} | type == "object")' "$CONFIG_FILE" >/dev/null || {
+    msg invalid_json "$CONFIG_FILE"
+    return 1
+  }
+}
+
+refresh_shell() {
+  omarchy-shell -q background refresh || true
+}
+
+current_theme() {
+  cat "$CURRENT_THEME_NAME_FILE" 2>/dev/null || true
+}
+
+active_theme() {
+  jq -r '.theme // ""' "$CONFIG_FILE" 2>/dev/null || true
+}
+
+# Theme names are already sanitised by omarchy-theme-set, but a hand-written
+# value must never escape the themes directory.
+safe_theme() {
+  local name="$1"
+  [[ "$name" =~ ^[A-Za-z0-9._-]+$ ]] || { msg bad_theme "$name"; return 1; }
+  printf '%s' "$name"
+}
+
+themed_file() { printf '%s/%s.json' "$THEMES_DIR" "$1"; }
+
+global_wallpaper() {
+  readlink -f "$CURRENT_BACKGROUND_LINK" 2>/dev/null || true
+}
+
+validate_monitor() {
+  local wanted="$1"
+  hyprctl monitors -j | jq -e --arg name "$wanted" 'any(.[]; .name == $name)' >/dev/null || {
+    msg monitor_not_found "$wanted"
+    return 1
+  }
+}
+
+# theme | user — decided by path, mirrors how sync-theme used to guess, but
+# stored explicitly so the origin survives theme swaps.
+wallpaper_source() {
+  local wp="$1"
+  case "$wp" in
+    "$CURRENT_THEME_BACKGROUNDS"/*|"$USER_THEME_BACKGROUNDS"/*) printf 'theme' ;;
+    *) printf 'user' ;;
+  esac
+}
+
+stamp_active_theme() {
+  local theme="$1" tmp
+  tmp="$(mktemp "${CONFIG_FILE}.XXXXXX")"
+  jq --arg theme "$theme" '.theme = $theme' "$CONFIG_FILE" > "$tmp"
+  mv -- "$tmp" "$CONFIG_FILE"
+}
+
+# Persist the active config, stamping the current theme and mirroring the
+# result into that theme's file so a crash never loses the latest edit.
+persist() {
+  local theme
+  theme="$(current_theme)"
+  if [[ -n ${theme:-} ]]; then
+    safe_theme "$theme" >/dev/null
+    stamp_active_theme "$theme"
+    local dest tmp
+    dest="$(themed_file "$theme")"
+    tmp="$(mktemp "${dest}.XXXXXX")"
+    cp -- "$CONFIG_FILE" "$tmp"
+    mv -- "$tmp" "$dest"
+  else
+    log warning "message=current theme unknown; per-theme mirror skipped"
+  fi
+  refresh_shell
+}
+
+write_monitor() {
+  local monitor="$1" wallpaper="$2" mode="$3" position="$4" ox="$5" oy="$6"
+  ensure_config
+  validate_monitor "$monitor"
+  [[ "$wallpaper" == /* && -f "$wallpaper" ]] || { msg wallpaper_not_found "$wallpaper"; return 1; }
+  [[ "$mode" =~ ^(crop|fit|stretch|tile)$ ]] || { msg unknown_mode "$mode"; return 1; }
+  [[ "$position" =~ ^(center|top|bottom|left|right|top-left|top-right|bottom-left|bottom-right)$ ]] || { msg unknown_position "$position"; return 1; }
+  [[ "$ox" =~ ^-?[0-9]+$ && "$oy" =~ ^-?[0-9]+$ ]] || { msg offsets_integer; return 1; }
+  wallpaper="$(realpath -- "$wallpaper")"
+  local source
+  source="$(wallpaper_source "$wallpaper")"
+  local tmp
+  tmp="$(mktemp "${CONFIG_FILE}.XXXXXX")"
+  jq --arg monitor "$monitor" --arg wallpaper "$wallpaper" --arg source "$source" --arg mode "$mode" --arg position "$position" --argjson ox "$ox" --argjson oy "$oy" \
+    '.monitors[$monitor] = {wallpaper:$wallpaper, source:$source, mode:$mode, position:$position, offset_x:$ox, offset_y:$oy}' "$CONFIG_FILE" > "$tmp"
+  mv -- "$tmp" "$CONFIG_FILE"
+  log set-wallpaper "monitor=$monitor" "mode=$mode" "position=$position" "source=$source" "wallpaper=$wallpaper"
+  persist
+}
+
+get_field() {
+  local monitor="$1" field="$2" default="$3"
+  ensure_config
+  jq -r --arg monitor "$monitor" --arg field "$field" --arg default "$default" '.monitors[$monitor][$field] // $default' "$CONFIG_FILE"
+}
+
+# Save the live config as the given theme's file (used when leaving a theme).
+snapshot_theme() {
+  local theme="$1"
+  safe_theme "$theme" >/dev/null
+  ensure_config
+  local dest tmp
+  dest="$(themed_file "$theme")"
+  tmp="$(mktemp "${dest}.XXXXXX")"
+  jq --arg theme "$theme" '.theme = $theme' "$CONFIG_FILE" > "$tmp"
+  mv -- "$tmp" "$dest"
+  log snapshot "theme=$theme" "file=$dest"
+}
+
+# Load a theme's file into the live config. Missing file means "theme default",
+# i.e. no per-monitor overrides at all: every monitor shows the global theme
+# background with crop/center/0/0. Theme-derived overrides whose file no longer
+# exists after a theme update are dropped so the monitor falls back cleanly.
+restore_theme() {
+  local theme="$1"
+  safe_theme "$theme" >/dev/null
+  ensure_config
+  local src tmp
+  src="$(themed_file "$theme")"
+  tmp="$(mktemp "${CONFIG_FILE}.XXXXXX")"
+  if [[ -f "$src" ]]; then
+    cp -- "$src" "$tmp"
+    local monitor wallpaper source next
+    while IFS=$'\t' read -r monitor wallpaper source; do
+      [[ -n "$monitor" ]] || continue
+      if [[ "$source" == "theme" && -n "$wallpaper" && ! -f "$wallpaper" ]]; then
+        next="${tmp}.next"
+        jq --arg monitor "$monitor" 'del(.monitors[$monitor])' "$tmp" > "$next"
+        mv -- "$next" "$tmp"
+        log restore-drop "theme=$theme" "monitor=$monitor" "missing=$wallpaper"
+      fi
+    done < <(jq -r '(.monitors // {}) | to_entries[] | [.key, (.value.wallpaper // ""), (.value.source // "")] | @tsv' "$tmp")
+    next="${tmp}.next"
+    jq --arg theme "$theme" '.theme = $theme' "$tmp" > "$next"
+    mv -- "$next" "$tmp"
+  else
+    jq -n --arg theme "$theme" '{theme: $theme, monitors: {}}' > "$tmp"
+  fi
+  mv -- "$tmp" "$CONFIG_FILE"
+  log restore "theme=$theme" "had_file=$([[ -f "$src" ]] && echo yes || echo no)"
+  refresh_shell
+}
+
+# Called by the shell on every theme transition. `theme.name` is already the
+# NEW theme at this point, so the outgoing theme is read back from the active
+# config's `theme` field. The path argument is kept for interface stability and
+# as a sanity check that the incoming theme actually ships backgrounds.
+sync_theme_wallpapers() {
+  local theme_background="$1"
+  ensure_config
+  [[ -f "$theme_background" ]] || { msg theme_bg_not_found "$theme_background"; return 1; }
+
+  local new_theme old_theme
+  new_theme="$(current_theme)"
+  old_theme="$(active_theme)"
+  [[ -n "$new_theme" ]] || { msg theme_unknown; return 1; }
+  log sync-theme "new=$new_theme" "old=${old_theme:-<none>}" "background=$theme_background"
+
+  if [[ -n "$old_theme" ]]; then
+    snapshot_theme "$old_theme"
+  else
+    log warning "message=active config has no theme field; nothing to snapshot"
+  fi
+  restore_theme "$new_theme"
+}
+
+# One-time migration of a pre-per-theme config: stamp the current theme and file
+# the existing monitors under it, so nothing is lost on the next theme change.
+migrate_config() {
+  ensure_config
+  local theme; theme="$(current_theme)"
+  [[ -n "$theme" ]] || { msg theme_unknown; return 1; }
+  safe_theme "$theme" >/dev/null
+  stamp_active_theme "$theme"
+
+  # Backfill the `source` field so pre-per-theme entries classify correctly.
+  local monitor wallpaper source next
+  while IFS=$'\t' read -r monitor wallpaper source; do
+    [[ -n "$monitor" ]] || continue
+    [[ -n "$source" ]] && continue
+    next="$(mktemp "${CONFIG_FILE}.XXXXXX")"
+    jq --arg monitor "$monitor" --arg source "$(wallpaper_source "$wallpaper")" \
+      '.monitors[$monitor].source = $source' "$CONFIG_FILE" > "$next"
+    mv -- "$next" "$CONFIG_FILE"
+  done < <(jq -r '(.monitors // {}) | to_entries[] | [.key, (.value.wallpaper // ""), (.value.source // "")] | @tsv' "$CONFIG_FILE")
+
+  local dest tmp
+  dest="$(themed_file "$theme")"
+  tmp="$(mktemp "${dest}.XXXXXX")"
+  jq --arg theme "$theme" '.theme = $theme' "$CONFIG_FILE" > "$tmp"
+  mv -- "$tmp" "$dest"
+  log migrate "theme=$theme" "file=$dest" "action=filed"
+  refresh_shell
+}
+
+set_global() {
+  local wallpaper="$1"
+  [[ -f "$wallpaper" ]] || { msg wallpaper_not_found "$wallpaper"; return 1; }
+  omarchy-theme-bg-set "$wallpaper"
+}
+
+clear_monitor() {
+  local monitor="$1"
+  ensure_config
+  validate_monitor "$monitor"
+  if ! jq -e --arg monitor "$monitor" '.monitors[$monitor]' "$CONFIG_FILE" >/dev/null; then
+    msg no_overrides "$monitor"
+    return 1
+  fi
+  local tmp
+  tmp="$(mktemp "${CONFIG_FILE}.XXXXXX")"
+  # A reset drops the whole entry: wallpaper, mode, position and offsets all
+  # fall back to the theme background with crop/center/0/0.
+  jq --arg monitor "$monitor" 'del(.monitors[$monitor])' "$CONFIG_FILE" > "$tmp"
+  mv -- "$tmp" "$CONFIG_FILE"
+  log clear "monitor=$monitor"
+  persist
+}
+
+# Geometry (mode/position/offsets) is valid without a per-monitor wallpaper:
+# the renderer then applies it to the global theme background. Create the
+# entry lazily so dragging works on a fresh theme too.
+ensure_monitor_entry() {
+  local monitor="$1"
+  if jq -e --arg monitor "$monitor" '.monitors[$monitor]' "$CONFIG_FILE" >/dev/null; then
+    return 0
+  fi
+  local tmp
+  tmp="$(mktemp "${CONFIG_FILE}.XXXXXX")"
+  jq --arg monitor "$monitor" \
+    '.monitors[$monitor] = {mode:"crop", position:"center", offset_x:0, offset_y:0}' "$CONFIG_FILE" > "$tmp"
+  mv -- "$tmp" "$CONFIG_FILE"
+  log geometry-entry "monitor=$monitor"
+}
+
+set_property() {
+  local monitor="$1" property="$2" value="$3"
+  ensure_config
+  validate_monitor "$monitor"
+  ensure_monitor_entry "$monitor"
+  local tmp
+  tmp="$(mktemp "${CONFIG_FILE}.XXXXXX")"
+  case "$property" in
+    mode)
+      [[ "$value" =~ ^(crop|fit|stretch|tile)$ ]] || { msg unknown_mode "$value"; return 1; }
+      jq --arg monitor "$monitor" --arg value "$value" '.monitors[$monitor].mode = $value' "$CONFIG_FILE" > "$tmp" ;;
+    position)
+      [[ "$value" =~ ^(center|top|bottom|left|right|top-left|top-right|bottom-left|bottom-right)$ ]] || { msg unknown_position "$value"; return 1; }
+      jq --arg monitor "$monitor" --arg value "$value" '.monitors[$monitor].position = $value' "$CONFIG_FILE" > "$tmp" ;;
+    offset_x|offset_y)
+      [[ "$value" =~ ^-?[0-9]+$ ]] || { msg offset_integer; return 1; }
+      jq --arg monitor "$monitor" --arg property "$property" --argjson value "$value" '.monitors[$monitor][$property] = $value' "$CONFIG_FILE" > "$tmp" ;;
+    *) msg unknown_property "$property"; return 1 ;;
+  esac
+  mv -- "$tmp" "$CONFIG_FILE"
+  log set-property "monitor=$monitor" "property=$property" "value=$value"
+  persist
+}
+
+set_offsets() {
+  local monitor="$1" ox="$2" oy="$3"
+  ensure_config
+  validate_monitor "$monitor"
+  [[ "$ox" =~ ^-?[0-9]+$ && "$oy" =~ ^-?[0-9]+$ ]] || { msg offsets_integer; return 1; }
+  ensure_monitor_entry "$monitor"
+  local tmp
+  tmp="$(mktemp "${CONFIG_FILE}.XXXXXX")"
+  jq --arg monitor "$monitor" --argjson ox "$ox" --argjson oy "$oy" \
+    '.monitors[$monitor].offset_x = $ox | .monitors[$monitor].offset_y = $oy' "$CONFIG_FILE" > "$tmp"
+  mv -- "$tmp" "$CONFIG_FILE"
+  log set-offsets "monitor=$monitor" "x=$ox" "y=$oy"
+  persist
+}
+
+select_wallpaper() {
+  local monitor="$1" dirs="${2:-}"
+  local theme_name user_dirs
+  theme_name="$(cat "$CURRENT_THEME_NAME_FILE" 2>/dev/null || true)"
+  if [[ -z "$dirs" ]]; then
+    dirs="$CURRENT_THEME_BACKGROUNDS"
+    [[ -n "$theme_name" && -d "$CONFIG_HOME/backgrounds/$theme_name" ]] && dirs="$dirs"$'\n'"$CONFIG_HOME/backgrounds/$theme_name"
+  fi
+
+  local tmp_dir selection done_file
+  tmp_dir="$(mktemp -d)"
+  selection="$tmp_dir/selection"
+  done_file="$tmp_dir/done"
+  trap 'rm -rf -- "$tmp_dir"' RETURN
+
+  omarchy-shell image-selector open "$dirs" 1 "" "$selection" "$done_file" true true
+  for _ in $(seq 1 600); do [[ -f "$done_file" ]] && break; sleep 0.1; done
+  if [[ ! -f "$done_file" ]]; then
+    msg picker_timeout
+    return 1
+  fi
+  if [[ -s "$selection" ]]; then
+    local wallpaper
+    wallpaper="$(<"$selection")"
+    if [[ -n "$wallpaper" ]]; then
+      if [[ "$monitor" == "--global" ]]; then
+        set_global "$wallpaper"
+      else
+        write_monitor "$monitor" "$wallpaper" \
+          "$(get_field "$monitor" mode crop)" "$(get_field "$monitor" position center)" \
+          "$(get_field "$monitor" offset_x 0)" "$(get_field "$monitor" offset_y 0)"
+      fi
+    fi
+  fi
+  trap - RETURN
+  rm -rf -- "$tmp_dir"
+}
+
+ensure_config
+case "${1:-}" in
+  set)
+    [[ $# -ge 3 ]] || { msg usage_set "$0"; exit 2; }
+    write_monitor "$2" "$3" "${4:-crop}" "${5:-center}" "${6:-0}" "${7:-0}" ;;
+  set-global) [[ $# -ge 2 ]] || exit 2; set_global "$2" ;;
+  sync-theme) [[ $# -ge 2 ]] || exit 2; sync_theme_wallpapers "$2" ;;
+  set-offsets) [[ $# -ge 4 ]] || exit 2; set_offsets "$2" "$3" "$4" ;;
+  set-mode|set-position|set-offset-x|set-offset-y)
+    [[ $# -ge 3 ]] || exit 2
+    property="${1#set-}"; property="${property//-/_}"
+    set_property "$2" "$property" "$3" ;;
+  clear) [[ $# -ge 2 ]] || exit 2; clear_monitor "$2" ;;
+  snapshot) [[ $# -ge 2 ]] || exit 2; snapshot_theme "$2" ;;
+  restore) [[ $# -ge 2 ]] || exit 2; restore_theme "$2" ;;
+  migrate) migrate_config ;;
+  theme) current_theme ;;
+  log)
+    [[ $# -ge 3 ]] || exit 2
+    log ui "level=$2" "message=$3" ;;
+  get)
+    [[ $# -ge 2 ]] || exit 2
+    jq -r --arg monitor "$2" '.monitors[$monitor].wallpaper // empty' "$CONFIG_FILE" | { read -r wp; [[ -n "$wp" ]] && echo "$wp" || global_wallpaper; } ;;
+  config)
+    [[ $# -ge 2 ]] || exit 2
+    jq -r --arg monitor "$2" --arg global "$(global_wallpaper)" '.monitors[$monitor] as $m | [$m.wallpaper // $global, $m.mode // "crop", $m.position // "center", $m.offset_x // 0, $m.offset_y // 0] | @tsv' "$CONFIG_FILE" ;;
+  list)
+    hyprctl monitors -j | jq -r '.[].name' | while IFS= read -r monitor; do
+      printf '%s: ' "$monitor"
+      jq -r --arg monitor "$monitor" 'if .monitors[$monitor].wallpaper then (.monitors[$monitor].wallpaper + " (" + (.monitors[$monitor].mode // "crop") + ", " + (.monitors[$monitor].position // "center") + ")") else "глобальні шпалери" end' "$CONFIG_FILE"
+    done ;;
+  select) [[ $# -ge 2 ]] || exit 2; select_wallpaper "$2" "${3:-}" ;;
+  select-global) select_wallpaper "--global" "${2:-}" ;;
+  apply) refresh_shell ;;
+  show-config) jq . "$CONFIG_FILE" ;;
+  *)
+    if [[ $LANG_CODE == uk ]]; then
+      cat >&2 <<USAGE
+Керування шпалерами моніторів:
+  set <монітор> <файл> [режим] [позиція] [x] [y]
+  set-global <файл>        встановити глобальну шпалеру (рідна для Omarchy)
+  set-mode <монітор> <crop|fit|stretch|tile>
+  set-position <монітор> <позиція>
+  set-offset-x|set-offset-y <монітор> <пікселі>
+  set-offsets <монітор> <x> <y>
+  select <монітор>         вибрати файл у меню Omarchy
+  select-global            вибрати глобальну шпалеру
+  clear <монітор>          використовувати шпалеру теми
+  sync-theme <файл>        оновити шпалери моніторів разом із темою
+  snapshot <тема>          зберегти поточний стан як файл теми
+  restore <тема>           завантажити файл теми в активний стан
+  migrate                  перенести старий конфіг у пер-темне сховище
+  theme                    надрукувати активну тему
+  log <рівень> <текст>     записати подію з UI в журнал
+  list | config <монітор> | get <монітор> | show-config | apply
+USAGE
+    else
+      cat >&2 <<USAGE
+Per-monitor wallpaper control:
+  set <monitor> <file> [mode] [position] [x] [y]
+  set-global <file>        set the global wallpaper (native Omarchy)
+  set-mode <monitor> <crop|fit|stretch|tile>
+  set-position <monitor> <position>
+  set-offset-x|set-offset-y <monitor> <pixels>
+  set-offsets <monitor> <x> <y>
+  select <monitor>         pick a file in the Omarchy menu
+  select-global            pick the global wallpaper
+  clear <monitor>          use the theme wallpaper
+  sync-theme <file>        refresh per-monitor wallpapers with the theme
+  snapshot <theme>         save the current state as a theme file
+  restore <theme>          load a theme file into the active state
+  migrate                  move the old config into per-theme storage
+  theme                    print the active theme
+  log <level> <message>    write a UI event to the log
+  list | config <monitor> | get <monitor> | show-config | apply
+USAGE
+    fi
+    exit 2 ;;
+esac

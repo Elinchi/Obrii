@@ -1,0 +1,321 @@
+#!/usr/bin/env python3
+"""Apply and persist per-output display settings for Hyprland/Omarchy."""
+import datetime
+import json
+import math
+import os
+import re
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+MONITORS_LUA = Path.home() / ".config/hypr/monitors.lua"
+STATE_DIR = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "omarchy"
+LOG_FILE = STATE_DIR / "wallpaper-editor.log"
+DEBUG = os.environ.get("WALLPAPER_EDITOR_DEBUG") == "1"
+
+
+def detect_language():
+    """Explicit override, then session locale, English fallback."""
+    tag = (os.environ.get("WALLPAPER_EDITOR_LANG")
+           or os.environ.get("LC_ALL")
+           or os.environ.get("LANG")
+           or "").lower()
+    return "uk" if tag.startswith(("uk", "ua")) else "en"
+
+
+LANG_CODE = detect_language()
+
+MESSAGES = {
+    "en": {
+        "reload_failed": "Hyprland could not reload the configuration.",
+        "config_check_failed": "Could not check the Hyprland configuration.",
+        "bad_mode": "Invalid mode format: {mode}",
+        "monitor_missing": "Monitor {name} disappeared after reloading the configuration.",
+        "problem_resolution": "resolution {actual} instead of {expected}",
+        "problem_refresh": "refresh rate {actual:.2f} Hz instead of {expected:.2f} Hz",
+        "problem_scale": "scale {actual:g} instead of {expected:g}",
+        "problem_transform": "transform {actual} instead of {expected}",
+        "problem_position": "position {actual} instead of {expected}",
+        "actual_state": "actually {mode}@{hz:.2f} Hz, scale {scale:g}, transform {transform}, position {pos}",
+        "verify_failed": "Hyprland did not apply the mode for {name}: {problems} ({actual}).",
+        "display_disconnected": "Display {name} is not connected right now.",
+        "mode_unsupported": "This mode is not supported by the selected display.",
+        "bad_resolution_format": "Invalid resolution/refresh rate format.",
+        "bad_scale": "Scale must be between 0.5 and 3.0.",
+        "bad_transform": "Unknown display rotation.",
+        "fractional_scale": "This scale produces fractional coordinates for the selected resolution.",
+        "overlap": "Displays would overlap: {a} and {b}.",
+        "rollback_needs_check": ("Hyprland did not apply the new settings, and restoring the "
+                                 "configuration also needs attention: {errors}; {rollback}"),
+        "rollback_done": "Hyprland rejected the new settings and restored the previous ones: {errors}",
+        "usage": "Usage: omarchy-monitor-control list | apply <output> <mode> <x> <y> <scale> <transform>"
+    },
+    "uk": {
+        "reload_failed": "Hyprland не зміг перечитати конфігурацію.",
+        "config_check_failed": "Не вдалося перевірити конфігурацію Hyprland.",
+        "bad_mode": "Некоректний формат режиму: {mode}",
+        "monitor_missing": "Монітор {name} зник після перечитування конфігурації.",
+        "problem_resolution": "роздільність {actual} замість {expected}",
+        "problem_refresh": "частота {actual:.2f} Hz замість {expected:.2f} Hz",
+        "problem_scale": "масштаб {actual:g} замість {expected:g}",
+        "problem_transform": "поворот {actual} замість {expected}",
+        "problem_position": "позиція {actual} замість {expected}",
+        "actual_state": "фактично {mode}@{hz:.2f} Hz, масштаб {scale:g}, поворот {transform}, позиція {pos}",
+        "verify_failed": "Hyprland не застосував режим для {name}: {problems} ({actual}).",
+        "display_disconnected": "Дисплей {name} зараз не підключений.",
+        "mode_unsupported": "Цей режим не підтримується вибраним дисплеєм.",
+        "bad_resolution_format": "Некоректний формат роздільності/частоти.",
+        "bad_scale": "Масштаб має бути від 0,5 до 3,0.",
+        "bad_transform": "Невідомий поворот дисплея.",
+        "fractional_scale": "Цей масштаб дає дробові координати для вибраної роздільності.",
+        "overlap": "Екрани перекриватимуться: {a} та {b}.",
+        "rollback_needs_check": ("Hyprland не застосував нові параметри, а відновлення конфігурації "
+                                 "теж потребує перевірки: {errors}; {rollback}"),
+        "rollback_done": "Hyprland відхилив нові параметри й відновив попередні: {errors}",
+        "usage": "Використання: omarchy-monitor-control list | apply <output> <mode> <x> <y> <scale> <transform>"
+    }
+}
+
+
+def msg(key, **fields):
+    table = MESSAGES.get(LANG_CODE, MESSAGES["en"])
+    template = table.get(key, MESSAGES["en"].get(key, key))
+    return template.format(**fields) if fields else template
+
+
+def log(event, **fields):
+    """Append a tab-separated key=value line, mirroring monitor-scaling.log.
+
+    Always writes to the shared log; WALLPAPER_EDITOR_DEBUG=1 additionally
+    echoes the line to stderr so a caller can follow what happened.
+    """
+    parts = [f"at={datetime.datetime.now().astimezone().isoformat(timespec='seconds')}",
+             f"event={event}"]
+    for key, value in fields.items():
+        # Paths and numbers stay readable; never emit a literal newline or tab.
+        text = str(value).replace("\t", " ").replace("\n", " ")
+        parts.append(f"{key}={text}")
+    line = "\t".join(parts)
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        with LOG_FILE.open("a", encoding="utf-8") as handle:
+            handle.write(line + "\n")
+    except OSError:
+        pass  # logging must never break applying display settings
+    if DEBUG:
+        print(f"[wallpaper-editor] {line}", file=sys.stderr)
+
+
+
+def run(args, check=True):
+    return subprocess.run(args, text=True, capture_output=True, check=check)
+
+
+def outputs():
+    data = json.loads(run(["hyprctl", "monitors", "-j"]).stdout)
+    return {m["name"]: m for m in data}
+
+
+def normalized_mode(value):
+    return str(value).removesuffix("Hz").strip()
+
+
+def persist_rule(name, mode, x, y, scale, transform):
+    source = MONITORS_LUA.read_text()
+    escaped = re.escape(name)
+    pattern = re.compile(rf'^\s*hl\.monitor\(\{{\s*output\s*=\s*"{escaped}"[^\n]*\}}\)\s*$', re.M)
+    line = (
+        f'hl.monitor({{ output = {json.dumps(name)}, mode = {json.dumps(mode)}, '
+        f'position = {json.dumps(f"{x}x{y}")}, scale = {scale:g}, transform = {transform} }})'
+    )
+    if pattern.search(source):
+        source = pattern.sub(line, source, count=1)
+    else:
+        marker = "-- --- Прив'язка просторів до моніторів ---"
+        if marker in source:
+            source = source.replace(marker, line + "\n\n" + marker, 1)
+        else:
+            source = source.rstrip() + "\n\n" + line + "\n"
+    tmp = MONITORS_LUA.with_suffix(".lua.tmp")
+    tmp.write_text(source)
+    tmp.replace(MONITORS_LUA)
+
+
+# Hyprland reports fractional refresh rates (59.95, 180.00101). Modes are
+# written with two decimals, so compare within half a hertz: close enough to
+# prove the requested rate landed, far enough to catch 60 vs 59.94 vs 180.
+REFRESH_TOLERANCE_HZ = 0.5
+
+
+def parse_mode(mode):
+    """Return (w, h, hz) from '1920x1200@59.95', or None when malformed."""
+    try:
+        resolution, hz = mode.split("@", 1)
+        width, height = resolution.split("x", 1)
+        return int(width), int(height), float(hz)
+    except (ValueError, AttributeError):
+        return None
+
+
+def reload_and_verify(name, mode, x, y, scale, transform, phase="apply"):
+    reload_result = run(["hyprctl", "reload"], check=False)
+    if reload_result.returncode != 0:
+        detail = (reload_result.stderr or reload_result.stdout or msg("reload_failed")).strip()
+        log("verify-failed", phase=phase, monitor=name, reason="reload", detail=detail)
+        return detail
+
+    errors_result = run(["hyprctl", "configerrors"], check=False)
+    errors = errors_result.stdout.strip()
+    if errors_result.returncode != 0:
+        errors = errors or errors_result.stderr.strip() or msg("config_check_failed")
+    if errors:
+        log("verify-failed", phase=phase, monitor=name, reason="configerrors", detail=errors)
+        return errors
+
+    expected = parse_mode(mode)
+    if expected is None:
+        detail = msg("bad_mode", mode=mode)
+        log("verify-failed", phase=phase, monitor=name, reason="bad-mode", detail=detail)
+        return detail
+
+    # This setup uses Omarchy's Lua config parser. `hyprctl keyword monitor`
+    # only works with the legacy parser, so the persisted Lua rule is the
+    # source of truth and must be verified after reload.
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        current = outputs().get(name)
+        if current and int(current.get("x", 0)) == x and int(current.get("y", 0)) == y:
+            actual_mode = (int(current.get("width", 0)), int(current.get("height", 0)))
+            actual_hz = float(current.get("refreshRate", 0) or 0)
+            if (actual_mode == expected[:2]
+                    and abs(actual_hz - expected[2]) <= REFRESH_TOLERANCE_HZ
+                    and abs(float(current.get("scale", 1)) - scale) < 0.001
+                    and int(current.get("transform", 0)) == transform):
+                log("verify-ok", phase=phase, monitor=name, mode=mode,
+                    refresh=round(actual_hz, 2), scale=scale, transform=transform, x=x, y=y)
+                return ""
+        time.sleep(0.1)
+    current = outputs().get(name)
+    if not current:
+        detail = msg("monitor_missing", name=name)
+        log("verify-failed", phase=phase, monitor=name, reason="missing", detail=detail)
+        return detail
+
+    actual_mode = (int(current.get("width", 0)), int(current.get("height", 0)))
+    actual_hz = float(current.get("refreshRate", 0) or 0)
+    actual_scale = float(current.get("scale", 1))
+    actual_transform = int(current.get("transform", 0))
+    problems = []
+    if actual_mode != expected[:2]:
+        problems.append(msg("problem_resolution",
+                            actual=f"{actual_mode[0]}×{actual_mode[1]}",
+                            expected=f"{expected[0]}×{expected[1]}"))
+    if abs(actual_hz - expected[2]) > REFRESH_TOLERANCE_HZ:
+        problems.append(msg("problem_refresh", actual=actual_hz, expected=expected[2]))
+    if abs(actual_scale - scale) >= 0.001:
+        problems.append(msg("problem_scale", actual=actual_scale, expected=scale))
+    if actual_transform != transform:
+        problems.append(msg("problem_transform", actual=actual_transform, expected=transform))
+    if not problems:
+        problems.append(msg("problem_position",
+                            actual=f"{current.get('x', '?')}×{current.get('y', '?')}",
+                            expected=f"{x}×{y}"))
+    actual = msg("actual_state",
+                 mode=f"{actual_mode[0]}×{actual_mode[1]}",
+                 hz=actual_hz, scale=actual_scale, transform=actual_transform,
+                 pos=f"{current.get('x', '?')}×{current.get('y', '?')}")
+    detail = msg("verify_failed", name=name, problems="; ".join(problems), actual=actual)
+    log("verify-failed", phase=phase, monitor=name,
+        reason="mismatch", expected=mode, actual=actual)
+    return detail
+
+
+def main():
+    if len(sys.argv) == 2 and sys.argv[1] == "list":
+        print(json.dumps(list(outputs().values()), ensure_ascii=False))
+        return
+    if len(sys.argv) != 8 or sys.argv[1] != "apply":
+        raise SystemExit(msg("usage"))
+    _, _, name, mode, xraw, yraw, scaleraw, transformraw = sys.argv
+    log("apply-request", monitor=name, mode=mode, x=xraw, y=yraw, scale=scaleraw, transform=transformraw)
+    active = outputs()
+    if name not in active:
+        raise ValueError(msg("display_disconnected", name=name))
+    monitor = active[name]
+    mode = normalized_mode(mode)
+    available = {normalized_mode(m) for m in monitor.get("availableModes", [])}
+    if mode not in available:
+        raise ValueError(msg("mode_unsupported"))
+    match = re.fullmatch(r"(\d+)x(\d+)@(\d+(?:\.\d+)?)", mode)
+    if not match:
+        raise ValueError(msg("bad_resolution_format"))
+    width, height = int(match.group(1)), int(match.group(2))
+    x, y = int(xraw), int(yraw)
+    scale = float(scaleraw)
+    transform = int(transformraw)
+    if not math.isfinite(scale) or not 0.5 <= scale <= 3:
+        raise ValueError(msg("bad_scale"))
+    if transform < 0 or transform > 7:
+        raise ValueError(msg("bad_transform"))
+    oriented = (height, width) if transform % 2 else (width, height)
+    if any(abs(d / scale - round(d / scale)) > 0.01 for d in oriented):
+        raise ValueError(msg("fractional_scale"))
+    new_width, new_height = (round(oriented[0] / scale), round(oriented[1] / scale))
+    for other_name, other in active.items():
+        if other_name == name:
+            continue
+        other_scale = float(other.get("scale", 1))
+        other_transform = int(other.get("transform", 0))
+        ow, oh = int(other.get("width", 0)), int(other.get("height", 0))
+        if other_transform % 2:
+            ow, oh = oh, ow
+        ow, oh = round(ow / other_scale), round(oh / other_scale)
+        ox, oy = int(other.get("x", 0)), int(other.get("y", 0))
+        if x < ox + ow and x + new_width > ox and y < oy + oh and y + new_height > oy:
+            raise ValueError(msg("overlap", a=name, b=other_name))
+
+    old_mode = f"{monitor['width']}x{monitor['height']}@{monitor['refreshRate']:.2f}"
+    old_state = (old_mode, int(monitor.get("x", 0)), int(monitor.get("y", 0)),
+                 float(monitor.get("scale", 1)), int(monitor.get("transform", 0)))
+    backup = MONITORS_LUA.with_name(MONITORS_LUA.name + ".bak." + str(int(time.time())))
+    backup.write_text(MONITORS_LUA.read_text())
+    persist_rule(name, mode, x, y, scale, transform)
+    errors = reload_and_verify(name, mode, x, y, scale, transform)
+    if errors:
+        log("rollback", monitor=name, reason=errors, backup=str(backup))
+        MONITORS_LUA.write_text(backup.read_text())
+        rollback_errors = reload_and_verify(name, old_state[0], old_state[1], old_state[2],
+                                            old_state[3], old_state[4], phase="rollback")
+        if rollback_errors:
+            log("rollback-failed", monitor=name, detail=rollback_errors)
+            raise ValueError(msg("rollback_needs_check", errors=errors, rollback=rollback_errors))
+        log("rollback-ok", monitor=name, restored_mode=old_state[0])
+        raise ValueError(msg("rollback_done", errors=errors))
+    # Report what Hyprland actually locked in, not just what was requested, so
+    # the panel can compare the requested Hz against the live one.
+    applied = outputs().get(name, {})
+    actual_hz = round(float(applied.get("refreshRate", 0) or 0), 2)
+    log("apply-ok", monitor=name, mode=mode, refresh=actual_hz, x=x, y=y, scale=scale, transform=transform)
+    print(json.dumps({
+        "ok": True,
+        "name": name,
+        "mode": mode,
+        "x": x,
+        "y": y,
+        "scale": scale,
+        "transform": transform,
+        "refreshRate": actual_hz,
+        "width": int(applied.get("width", width)),
+        "height": int(applied.get("height", height))
+    }, ensure_ascii=False))
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (ValueError, OSError, subprocess.CalledProcessError, json.JSONDecodeError) as exc:
+        log("apply-error", detail=str(exc))
+        print(str(exc), file=sys.stderr)
+        raise SystemExit(1)

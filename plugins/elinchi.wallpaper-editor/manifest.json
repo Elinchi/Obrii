@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "id": "elinchi.wallpaper-editor",
+  "name": "Wallpaper & Display Editor",
+  "version": "1.1.0",
+  "author": "Elinchi",
+  "description": "Per-monitor wallpaper editor (preview, drag, offsets, scaling, position) and display settings panel",
+  "kinds": ["panel"],
+  "entryPoints": {
+    "panel": "Panel.qml"
+  }
+}
