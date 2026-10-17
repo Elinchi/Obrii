@@ -28,6 +28,9 @@ Item {
   property string statusMessage: ""
   property string currentTheme: ""
   property var pendingOffsets: null
+  // The GTK file chooser is a normal window and would sit under this overlay
+  // panel, so the window is hidden (not unloaded) while it is open.
+  property bool dialogOpen: false
   property string selectedMonitor: ""
   property string globalWallpaper: ""
   property var monitors: []
@@ -602,6 +605,7 @@ Item {
     }
     onExited: function(code) {
       root.busy = false
+      root.dialogOpen = false
       if (code === 0) {
         if (themeImageProc.addedPath) {
           var name = themeImageProc.addedPath.split("/").pop()
@@ -620,7 +624,7 @@ Item {
   }
 
   PanelWindow {
-    visible: root.opened
+    visible: root.opened && !root.dialogOpen
     anchors { top: true; bottom: true; left: true; right: true }
     color: "transparent"
     exclusionMode: ExclusionMode.Ignore
@@ -1304,6 +1308,7 @@ Item {
                   root.statusMessage = ""
                   root.errorText = ""
                   root.busy = true
+                  root.dialogOpen = true
                   themeImageProc.running = true
                 }
               }

@@ -43,6 +43,8 @@ MSG_EN[usage_set]="Usage: %s set <monitor> <file> [mode] [position] [x] [y]"
 MSG_UK[usage_set]="Використання: %s set <монітор> <файл> [режим] [позиція] [x] [y]"
 MSG_EN[not_image]="Not an image file: %s"
 MSG_UK[not_image]="Це не файл зображення: %s"
+MSG_EN[chooser_failed]="Could not open the file chooser."
+MSG_UK[chooser_failed]="Не вдалося відкрити файловий діалог."
 
 msg() {
   local key="$1"; shift
@@ -383,31 +385,20 @@ set_offsets() {
 
 # Open Omarchy's image picker for the given directories and print the chosen
 # file. Prints nothing when the picker is cancelled.
-has_images() {
-  find "$1" -maxdepth 1 -type f \
-    \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' -o -iname '*.gif' \
-       -o -iname '*.bmp' -o -iname '*.webp' \) -print -quit 2>/dev/null | grep -q .
-}
-
+# Open the desktop file chooser (folder navigation + path entry) filtered to
+# images and print the chosen file. Prints nothing when cancelled.
 pick_image_file() {
-  local dirs="$1"
-  local tmp_dir selection done_file
-  tmp_dir="$(mktemp -d)"
-  selection="$tmp_dir/selection"
-  done_file="$tmp_dir/done"
-  trap 'rm -rf -- "$tmp_dir"' RETURN
-
-  omarchy-shell image-selector open "$dirs" 1 "" "$selection" "$done_file" true true >/dev/null
-  for _ in $(seq 1 600); do [[ -f "$done_file" ]] && break; sleep 0.1; done
-  if [[ ! -f "$done_file" ]]; then
-    msg picker_timeout
+  local title="${1:-Select image}" selection status=0
+  selection="$(omarchy-file-select --title "$title" \
+    --extensions "png jpg jpeg webp gif bmp")" || status=$?
+  if (( status == 1 )); then
+    return 0            # cancelled: nothing picked, not an error
+  fi
+  if (( status != 0 )); then
+    msg chooser_failed
     return 1
   fi
-  if [[ -s "$selection" ]]; then
-    cat -- "$selection"
-  fi
-  trap - RETURN
-  rm -rf -- "$tmp_dir"
+  printf '%s\n' "$selection"
 }
 
 # Copy an image into the active theme's background folder. Omarchy reads
@@ -426,9 +417,9 @@ add_theme_image() {
   mkdir -p "$dir"
 
   if [[ -z "$source" ]]; then
-    local start="$HOME/Pictures"
-    if [[ ! -d "$start" ]] || ! has_images "$start"; then start="$HOME"; fi
-    source="$(pick_image_file "$start")" || return 1
+    local title="Obrii — add image to theme"
+    [[ $LANG_CODE == uk ]] && title="Obrii — додати зображення до теми"
+    source="$(pick_image_file "$title")" || return 1
     [[ -n "$source" ]] || return 0
   fi
 
