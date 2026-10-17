@@ -79,7 +79,8 @@ into `~/.config/omarchy/extensions/omarchy-menu.jsonc`.
   - `Position` anchors `crop`/`fit` (center, edges, corners).
   - `Choose image…` sets a wallpaper for this monitor (stored per theme).
   - `Change theme…` opens Omarchy's theme picker; the editor stays open.
-  - `Add image to theme…` copies a picture into
+  - `Add image to theme…` opens the desktop file chooser (folder navigation,
+    `Ctrl+L` for a path) filtered to images, then copies the picture into
     `~/.config/omarchy/backgrounds/<theme>/`, so Omarchy lists it among the
     theme's backgrounds. The active theme is always shown in the header.
   - `Reset for monitor` drops the whole per-monitor entry (wallpaper + geometry).
@@ -241,9 +242,10 @@ cd Obrii
   - `Позиція` — якір для `crop`/`fit` (центр, краї, кути).
   - `Вибрати зображення…` — окрема шпалера для цього монітора (зберігається для теми).
   - `Змінити тему…` — відкриває штатний пікер тем Omarchy; редактор лишається відкритим.
-  - `Додати зображення до теми…` — копіює зображення в
-    `~/.config/omarchy/backgrounds/<тема>/`, після чого Omarchy показує його
-    серед фонів теми. Поточна тема завжди видна в заголовку.
+  - `Додати зображення до теми…` — відкриває файловий діалог (навігація по папках,
+    `Ctrl+L` для шляху) з фільтром на зображення, після чого копіює файл у
+    `~/.config/omarchy/backgrounds/<тема>/` — Omarchy показує його серед фонів
+    теми. Поточна тема завжди видна в заголовку.
   - `Скинути для монітора` — видаляє весь запис монітора (шпалеру й геометрію).
 - **Вкладка «Монітори»**
   - Перетягуй дисплеї на схемі, вибирай роздільність, частоту, масштаб, орієнтацію.
