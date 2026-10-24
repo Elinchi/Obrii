@@ -307,15 +307,24 @@ Item {
         })
       }
       normalized.sort(function(a, b) {
-        if (a.name === "DP-3") return -1
-        if (b.name === "DP-3") return 1
         if (a.focused !== b.focused) return a.focused ? -1 : 1
+        var ax = (a.x === undefined || a.x === null) ? 0 : a.x
+        var bx = (b.x === undefined || b.x === null) ? 0 : b.x
+        if (ax !== bx) return ax - bx
         return a.name.localeCompare(b.name)
       })
       monitors = normalized
       if (!selectedMonitor || !monitorExists(selectedMonitor)) {
-        var primary = normalized.find(function(m) { return m.name === "DP-3" })
-        if (!primary) primary = normalized.find(function(m) { return m.focused })
+        var primary = normalized.find(function(m) { return m.focused })
+        if (!primary) {
+          var byPos = normalized.slice().sort(function(a,b) {
+            var ax = (a.x === undefined || a.x === null) ? 0 : a.x
+            var bx = (b.x === undefined || b.x === null) ? 0 : b.x
+            if (ax !== bx) return ax - bx
+            return a.name.localeCompare(b.name)
+          })
+          primary = byPos[0]
+        }
         selectedMonitor = primary ? primary.name : (normalized.length ? normalized[0].name : "")
       }
       loadMonitorValues()
@@ -436,7 +445,7 @@ Item {
     { value: "7", label: root.tr("orientation.7") }
   ]
   readonly property var monitorOptions: monitors.map(function(m) {
-    return { value: m.name, label: m.name + (m.name === "DP-3" ? " · " + root.tr("monitor.primary") : "") }
+    return { value: m.name, label: m.name + (m.focused ? " · " + root.tr("monitor.primary") : "") }
   })
 
   FileView {
@@ -765,7 +774,7 @@ Item {
                 model: root.monitors
                 Button {
                   required property var modelData
-                  text: modelData.name + (modelData.name === "DP-3" ? " · " + root.tr("monitor.primary") : "") + "  " + modelData.logicalWidth + "×" + modelData.logicalHeight + (modelData.logicalWidth >= modelData.logicalHeight ? " · " + root.tr("monitor.landscape") : " · " + root.tr("monitor.portrait"))
+                  text: modelData.name + (modelData.focused ? " · " + root.tr("monitor.primary") : "") + "  " + modelData.logicalWidth + "×" + modelData.logicalHeight + (modelData.logicalWidth >= modelData.logicalHeight ? " · " + root.tr("monitor.landscape") : " · " + root.tr("monitor.portrait"))
                   selected: root.selectedMonitor === modelData.name
                   onClicked: root.setMonitor(modelData.name)
                 }
